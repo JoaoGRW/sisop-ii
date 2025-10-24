@@ -1,6 +1,7 @@
 #include <iostream>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <ctime>
 #include <unordered_map>
 #include <list>
@@ -18,11 +19,11 @@
 
 class Client{
     uint32_t ip_addr;
-    int last_req;
-    int balance;
+    uint32_t last_req;
+    uint32_t balance;
 
     public:
-    Client(uint32_t ip, int bal){
+    Client(uint32_t ip, uint32_t bal){
         this->ip_addr = ip;
         this->balance = bal;
         this->last_req = 0;
@@ -33,12 +34,16 @@ class Client{
     // Metodos getters
     uint32_t getIPAddress(){ return this->ip_addr; }
 
-    int getLastRequestID(){ return this->last_req; }
+    uint32_t getLastRequestID(){ return this->last_req; }
 
-    int getBalance(){ return this->balance; }
+    uint32_t getBalance(){ return this->balance; }
 
     void updateBalance(int amount_transfered){
         this->balance += amount_transfered;
+    }
+
+    void updateLastRequestID(){
+        this->last_req++;
     }
 
     void updateRequest(){
@@ -72,77 +77,202 @@ public:
 
 // Tabela Hash dos clientes
 std::unordered_map<uint32_t, Client> clients;
+std::mutex clients_mtx;
 // Histórico de transações
 std::list<Transaction> transaction_history;
-int curr_transaction_id = 0;
-// TODO: Implementar os mutexes para leitura e escrita na tabela dos clientes e historico de transacao
+std::mutex transactions_mtx;
+int next_transaction_id = 0;
 
-// Função auxiliar para imprimir as informações na tela
-void print_info(time_t time, int num_transactions, int total_transfered, int total_balance){
-    std::string date_time(ctime(&time));
+// Variáveis de controle de novas entradas nas estruturas
+bool newTransaction = false;
+int num_transactions = 0;
+int total_transfered = 0;
+int total_balance = 0;
 
-    std::cout << date_time << "num_transactions " << num_transactions << " total_transfered "
-    << total_transfered << " total_balance " << total_balance;
+// Mutex e variável de condição para o subsistema de interface
+std::condition_variable cv;
+std::mutex cv_mtx;
+
+// Função auxiliar para criar um cliente e adicioná-lo na tabela
+Client create_new_client(uint32_t clientIP, uint32_t startingBalance){
+    Client new_client(clientIP, startingBalance);
+    clients[clientIP] = new_client;
+
+    return new_client;
 }
 
-void handle_discovery(int sock, sockaddr_in cli_addr){
-    // Extraíndo o endereço IP do cliente
+// Função que será executada por uma thread a cada nova mensagem de descoberta
+void handle_discovery(int sock, sockaddr_in server_addr, sockaddr_in cli_addr){
+    // Extraíndo o endereço IP do cliente e checando se ele já não está na tabela
     uint32_t cli_ip = cli_addr.sin_addr.s_addr;
-    // Adiciona novo cliente na tabela Hash de clientes
-    Client new_cli(cli_ip, STARTING_BALANCE);
-    clients[cli_ip] = new_cli;
+    Client client;
 
+    // Ínicio da seção crítica
+    clients_mtx.lock(); 
+    // Checa se o cliente já não está na tabela de clientes
+    if (!clients.count(cli_ip)){
+        // Se não está cria novo e adiciona na tabela
+        client = create_new_client(cli_ip, STARTING_BALANCE);
+    }else{
+        client = clients[cli_ip];
+    }
+    clients_mtx.unlock();
+    // Fim da seção crítica
 
     // Constroí o pacote de resposta
     packet discovery_answer;
-
     discovery_answer.type = static_cast<uint16_t>(messageType::DISCOVERY_ACK);
     discovery_answer.seq_n = 0;
-    struct discoveryACK discACK = {static_cast<uint32_t>(new_cli.getBalance())};
+    struct discoveryACK discACK = { server_addr.sin_addr.s_addr, client.getBalance()};
     discovery_answer.disc_ack = discACK;
 
     // Enviando confirmação de descoberta
     sendto(sock, &discovery_answer, sizeof(discovery_answer), 0, (sockaddr*)&cli_addr, sizeof(cli_addr));
 }
 
+// Função auxiliar para enviar um ACK de uma requisição
+void send_request_ACK(Client& client, int sock, sockaddr_in client_addr){
+    packet reqACK;
+    reqACK.type = static_cast<uint16_t>(messageType::REQUEST_ACK);
+    reqACK.seq_n = client.getLastRequestID();
+    struct requestACK ack = { reqACK.seq_n, client.getBalance() };
+
+    // Envia o ACK da requisição
+    sendto(sock, &reqACK, sizeof(reqACK), 0, (sockaddr*)&client_addr, sizeof(&client_addr));
+}
+
 // Função para responder à uma requisição de um cliente
 void handle_request(int sock, sockaddr_in cli_addr, packet req_message){
     // Endereco de origem e destino da transferencia
     uint32_t cli_ip = cli_addr.sin_addr.s_addr;
-    uint32_t target_ip = req_message.req.dest_addr;
+    uint32_t dest_ip = req_message.req.dest_addr;
 
+    // Ínicio da seção crítica
+    clients_mtx.lock();
     // Checa se o cliente ja foi descoberto
-    if (!clients.count(cli_ip) || !clients.count(target_ip))
+    if (!clients.count(cli_ip))
         return;
     Client origin_cli = clients[cli_ip];
+
+    // Checa se o cliente destino já foi criado 
+    Client dest_cli;
+    if (!clients.count(dest_ip))
+        dest_cli = create_new_client(dest_ip, STARTING_BALANCE);
+    else
+        dest_cli = clients[dest_ip]; 
+    clients_mtx.unlock();
+    // Fim da seção crítica
+
     // Checa se o numero de sequencia da requisição está correto
-    if (origin_cli.getLastRequestID() != req_message.seq_n)
-        return;
+    // Caso não esteja o correto o número de sequência o servidor reenvia o último ACK
+    if (origin_cli.getLastRequestID() != req_message.seq_n){
+        send_request_ACK(origin_cli, sock, cli_addr);
+    }
     
     // Checa se o cliente tem saldo suficiente
-    int trans_val = req_message.req.amount;
-    if (origin_cli.getBalance() < trans_val)
+    int transaction_val = req_message.req.amount;
+    if (origin_cli.getBalance() < transaction_val)
         return;
     
-    // Atualiza o saldo dos 2 clientes
-    origin_cli.updateBalance(-trans_val);
-    clients[target_ip].updateBalance(trans_val);
+    // Atualiza o saldo dos 2 clientes e envia a mensagem de ACK
+    origin_cli.updateBalance(-transaction_val);
+    dest_cli.updateBalance(transaction_val);
+    origin_cli.updateLastRequestID();
+
+    // Ínicio da seção crítica
+    clients_mtx.lock();
+
     clients[cli_ip] = origin_cli;
+    clients[dest_ip] = dest_cli;
 
-    // Envia mensagem de confirmacao de transacao
-    packet req_answer;
-    req_answer.type = static_cast<uint16_t>(messageType::REQUEST_ACK);
-    req_answer.seq_n = req_message.seq_n + 1;
-    struct requestACK requestACK = {req_message.seq_n, static_cast<uint32_t>(origin_cli.getBalance())};
-    req_answer.req_ack = requestACK;
+    clients_mtx.unlock();
+    // Fim da seção crítica
 
-    sendto(sock, &req_answer, sizeof(req_answer), 0, (sockaddr*)&cli_addr, sizeof(&cli_addr));
+    send_request_ACK(origin_cli, sock, cli_addr);
 
     // Atualiza o histórico de transferências
-    // TODO: mutex
-    Transaction transaction(cli_ip, curr_transaction_id, target_ip, trans_val);
-    curr_transaction_id++;
+    // Ínicio da seção crítica
+    transactions_mtx.lock();
+
+    Transaction transaction(cli_ip, next_transaction_id, dest_ip, transaction_val);
+    next_transaction_id++;
     transaction_history.push_back(transaction);
+
+    transactions_mtx.unlock();
+    // Fim da seção crítica
+
+    // Atualiza os dados de transação e notifica a thread de interface da mudança
+    std::lock_guard<std::mutex> lock(cv_mtx);
+    newTransaction = true;
+
+    num_transactions++;
+    total_transfered += transaction_val;
+
+    cv.notify_one();
+}
+
+// Função auxiliar que imprime YYYY-MM-DD hh:mm:ss
+void print_current_date_time(){
+    time_t now = time(0);
+    struct tm *dt = localtime(&now);
+
+    std::cout << dt->tm_year + 1900 << '-' << dt->tm_mon << '-' << dt->tm_mday << ' '
+    << dt->tm_hour << ':' << dt->tm_min << ':' << dt->tm_sec;
+} 
+
+// Função auxiliar para imprimir dados de transação do servidor
+void print_transactions_data(){
+    std::cout << " num_transactions " << num_transactions << " total_transfered "
+    << total_transfered << " total_balance " << total_balance << '\n';
+}
+
+// Função que será executada pela thread do sbuserviço de interface
+void handle_interface(){
+    
+    print_current_date_time();
+    print_transactions_data();
+
+    // Imprime informações dos clientes e transações a cada atualização
+    while(true){
+        std::unique_lock<std::mutex> lock(cv_mtx);
+        cv.wait(lock, [] { return newTransaction; });
+
+        // Reseta a flag de nova transação
+        newTransaction = false;
+
+        // Le os dados da ultima transacao realizada
+        transactions_mtx.lock();
+        print_current_date_time();
+        Transaction last_t = transaction_history.back();
+        std::cout << " client " << last_t.getOriginIP() << " id_req " << last_t.getReqID()
+        << " dest " << last_t.getDestIP() << " value " << last_t.getAmount() << '\n';
+        transactions_mtx.unlock();
+
+        print_transactions_data(); 
+
+    }
+}
+
+// Função auxiliar para abertura e bind da socket do servidor
+bool open_server_socket(int& sock, int port, struct sockaddr_in& server_addr){
+    // Abrindo socket
+    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1){
+        std::cout << "ERROR on opening\n";
+        return false;
+    }
+
+    server_addr.sin_family      = AF_INET;
+    server_addr.sin_port        = htons(port);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    bzero(&(server_addr.sin_zero), 8);
+
+    // Bind socket
+    if (bind(sock, (struct sockaddr *) &server_addr, sizeof(struct sockaddr)) < 0){
+        std::cout << "ERROR on bind\n";
+        return false;
+    }
+
+    return true;
 }
 
 int main(int argc, char **argv){
@@ -153,33 +283,17 @@ int main(int argc, char **argv){
     }
     int port = atoi(argv[1]);
 
-    int num_transactions = 0;
-    int total_transfered = 0;
-    int total_balance = 0;
-
-    time_t now = time(0);
-    print_info(now, num_transactions, total_transfered, total_balance);
-
     // Abrindo a socket do servidor
     int sock;
-    socklen_t clilen;
     struct sockaddr_in cli_addr, server_addr;
 
-    if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1){
-        std::cout << "ERROR on opening\n";
+    if(!open_server_socket(sock, port, server_addr))
         return 1;
-    }
 
-    server_addr.sin_family      = AF_INET;
-    server_addr.sin_port        = htons(port);
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    bzero(&(server_addr.sin_zero), 8);
+    // Thread do subserviço de interface
+    std::thread interface_thread(handle_interface);
 
-    if (bind(sock, (struct sockaddr *) &server_addr, sizeof(struct sockaddr)) < 0){
-        std::cout << "ERROR on bind\n";
-        return 1;
-    }
-
+    socklen_t clilen;
     clilen = sizeof(struct sockaddr_in);
 
     char buffer[256];
@@ -192,7 +306,7 @@ int main(int argc, char **argv){
         
         packet p = *(packet*)buffer;
         if (p.type == static_cast<uint16_t>(messageType::DISCOVERY)){
-            std::thread discovery_thread(handle_discovery, sock, cli_addr);
+            std::thread discovery_thread(handle_discovery, sock, server_addr, cli_addr);
             discovery_thread.detach();
         }
         else if (p.type == static_cast<uint16_t>(messageType::REQUEST)){

@@ -18,6 +18,7 @@ struct requestACK{
 };
 
 struct discoveryACK{
+    uint32_t server_address; // IP do servidor para confirmação
     uint32_t client_balance; // Saldo do cliente recém descoberto
 };
 

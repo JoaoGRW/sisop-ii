@@ -74,6 +74,7 @@ public:
 std::unordered_map<uint32_t, Client> clients;
 // Histórico de transações
 std::list<Transaction> transaction_history;
+int curr_transaction_id = 0;
 // TODO: Implementar os mutexes para leitura e escrita na tabela dos clientes e historico de transacao
 
 // Função auxiliar para imprimir as informações na tela
@@ -136,6 +137,12 @@ void handle_request(int sock, sockaddr_in cli_addr, packet req_message){
     req_answer.req_ack = requestACK;
 
     sendto(sock, &req_answer, sizeof(req_answer), 0, (sockaddr*)&cli_addr, sizeof(&cli_addr));
+
+    // Atualiza o histórico de transferências
+    // TODO: mutex
+    Transaction transaction(cli_ip, curr_transaction_id, target_ip, trans_val);
+    curr_transaction_id++;
+    transaction_history.push_back(transaction);
 }
 
 int main(int argc, char **argv){

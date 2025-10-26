@@ -97,6 +97,7 @@ std::mutex cv_mtx;
 Client create_new_client(uint32_t clientIP, uint32_t startingBalance){
     Client new_client(clientIP, startingBalance);
     clients[clientIP] = new_client;
+    total_balance += startingBalance;
 
     return new_client;
 }
@@ -257,7 +258,7 @@ void handle_interface(){
 bool open_server_socket(int& sock, int port, struct sockaddr_in& server_addr){
     // Abrindo socket
     if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1){
-        std::cout << "ERROR on opening\n";
+        std::cerr << "ERROR on opening\n";
         return false;
     }
 
@@ -268,7 +269,7 @@ bool open_server_socket(int& sock, int port, struct sockaddr_in& server_addr){
 
     // Bind socket
     if (bind(sock, (struct sockaddr *) &server_addr, sizeof(struct sockaddr)) < 0){
-        std::cout << "ERROR on bind\n";
+        std::cerr << "ERROR on bind\n";
         return false;
     }
 

@@ -239,6 +239,19 @@ void print_transactions_data(){
     << total_transfered << " total_balance " << total_balance << '\n';
 }
 
+// Função auxiliar para imprimir dados de uma transação
+void print_Transaction(Transaction &t){
+    uint32_t origin_ip  = t.getOriginIP();
+    uint32_t dest_ip    = t.getDestIP();
+    char buf[INET_ADDRSTRLEN];
+
+    print_current_date_time();
+        std::cout << " client " << inet_ntop(AF_INET, &origin_ip, buf, sizeof(buf)) 
+        << " id_req " << t.getReqID()
+        << " dest " << inet_ntop(AF_INET, &dest_ip, buf, sizeof(buf)) << " value " << t.getAmount() << '\n';
+
+}
+
 // Função que será executada pela thread do sbuserviço de interface
 void handle_interface(){
     
@@ -248,24 +261,34 @@ void handle_interface(){
     // Imprime informações dos clientes e transações a cada atualização
     while(true){
         std::unique_lock<std::mutex> lock(cv_mtx);
-        cv.wait(lock, [] { return newTransaction; });
+        cv.wait(lock, [] { return newTransaction || duplicate_request; });
 
-        // Reseta a flag de nova transação
-        newTransaction = false;
+        // Copia as flags
+        bool nt  = newTransaction;
+        bool dup = duplicate_request;
+    
+        // Reseta as flags
+        newTransaction      = false;
+        duplicate_request   = false;
 
-        // Le os dados da ultima transacao realizada
-        transactions_mtx.lock();
-        print_current_date_time();
-        Transaction last_t = transaction_history[num_transactions - 1];
-        transactions_mtx.unlock();
+        if (nt){
+            // Le os dados da ultima transacao realizada
+            transactions_mtx.lock();
+            Transaction last_t = transaction_history[num_transactions - 1];
+            transactions_mtx.unlock();
 
-        uint32_t origin_ip = last_t.getOriginIP();
-        uint32_t dest_ip = last_t.getDestIP();
-        char buf[INET_ADDRSTRLEN];
-        std::cout << " client " << inet_ntop(AF_INET, &origin_ip, buf, sizeof(buf)) 
-        << " id_req " << last_t.getReqID()
-        << " dest " << inet_ntop(AF_INET, &dest_ip, buf, sizeof(buf)) << " value " << last_t.getAmount() << '\n';
+            print_Transaction(last_t);
+        }
+        if (dup){
+            // Pega as informações da transação que foi recebida duplicada
+            transactions_mtx.lock();
+            Transaction duplicate = transaction_history[dup_req_index];
+            transactions_mtx.unlock();
+            
+            print_Transaction(duplicate);
+        }
 
+        // Imprime os dados gerais do servidor
         print_transactions_data(); 
     }
 }

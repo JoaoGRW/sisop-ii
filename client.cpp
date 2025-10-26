@@ -164,7 +164,9 @@ void handle_output(){
         // Verifica se deve imprimir informações da última transferência ou o saldo atual
         print_current_date_time();
         if (transfer){
-            std::cout << " id_req " << curr_seq_n << " dest " << transfer_dest_ip
+            char buf[256];
+            std::cout << " id_req " << curr_seq_n << " dest "
+            << inet_ntop(AF_INET, &transfer_dest_ip, buf, sizeof(buf))
             << " value " << transfer_amount << " new_balance " << curr_balance << '\n';
         }
         if (balance){

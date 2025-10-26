@@ -2,6 +2,8 @@
 #include <ctime>
 #include <thread>
 #include <cstdlib>
+#include <mutex>
+#include <condition_variable>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -13,12 +15,19 @@
 
 #define TIMEOUT_SEC 2
 
-uint32_t curr_balance;
-uint32_t curr_seq_n = 0;
+// Flags para impressao de informacoes na tela
+bool show_curr_balance  = false;
+bool show_last_transfer = false;
+bool no_server_answer   = false;
 
 // Informações guardadas da última transação realizada pelo cliente
+std::mutex mtx;
+std::condition_variable cv;
+
 uint32_t transfer_dest_ip;
 uint32_t transfer_amount;
+uint32_t curr_balance;
+uint32_t curr_seq_n = 0;
 
 // Função auxiliar para abrir o socket do cliente, configurado para broadcast
 bool open_client_socket(int& sock, int port, struct sockaddr_in& local_addr){
@@ -107,6 +116,63 @@ void print_current_date_time(){
     << dt->tm_hour << ':' << dt->tm_min << ':' << dt->tm_sec;
 }
 
+// Função auxiliar para mandar uma requisição de transferência
+bool send_transfer_request(uint32_t dest_ip, int amount, int &new_balance, int sock, struct sockaddr_in server_addr){
+    // Montando e enviando o pacote de requisicao
+    packet transfer_req;
+    curr_seq_n++;
+    transfer_req.seq_n = curr_seq_n;
+    transfer_req.type = static_cast<uint16_t>(messageType::REQUEST);
+    // Usar 'amount' (parâmetro) e dest_ip (parâmetro)
+    transfer_req.req = { dest_ip, static_cast<uint32_t>(amount) };
+
+    char buffer[256];
+    socklen_t len = sizeof(server_addr);
+    int resend = 0;
+    while (resend < 3){
+        sendto(sock, &transfer_req, sizeof(transfer_req), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
+
+        int n = recvfrom(sock, &buffer, 256, 0, (struct sockaddr*)&server_addr, &len);
+        if (n < 0) {
+            // timeout ou erro no recvfrom
+            resend++;
+            continue;
+        }
+        packet p = *(packet*)buffer;
+        if (p.type == static_cast<uint16_t>(messageType::REQUEST_ACK) && p.req_ack.seq_n == curr_seq_n){
+            new_balance = p.req_ack.new_balance;
+            return true;
+        }
+        resend++;
+    }
+
+    return false;
+}
+
+// Função que será executada pela thread responsável por mostrar informações na tela
+void handle_output(){
+    while (true){
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [] { return show_last_transfer || show_curr_balance || no_server_answer; });
+
+        bool transfer = show_last_transfer;
+        bool balance  = show_curr_balance;
+
+        show_last_transfer = false;
+        show_curr_balance  = false;
+
+        // Verifica se deve imprimir informações da última transferência ou o saldo atual
+        print_current_date_time();
+        if (transfer){
+            std::cout << " id_req " << curr_seq_n << " dest " << transfer_dest_ip
+            << " value " << transfer_amount << " new_balance " << curr_balance << '\n';
+        }
+        if (balance){
+            std::cout << "curr_balance " << curr_balance << '\n';
+        }
+    }
+}
+
 int main(int argc, char** argv){
     // Recebe a porta na qual o cliente irá rodar pela linha de comando
     if (argc < 2){
@@ -115,8 +181,6 @@ int main(int argc, char** argv){
     }
     int port = atoi(argv[1]);
     int sock;
-    uint32_t transfer_target_ip;
-    int transfer_value;
     struct sockaddr_in local_addr, server_addr;
 
     // Abertura do socket do cliente com opção de broadcast
@@ -126,21 +190,58 @@ int main(int argc, char** argv){
     // Envio da mensagem de descoberta do servidor, endereço será escrito em server_addr
     if (!send_discovery_message(sock, port, server_addr))
         return 1;
+
+
+    // Imprime as mensagens iniciais de abertura do cliente
+    char buf[INET_ADDRSTRLEN + 1];  
     print_current_date_time();
-    std::cout << " server_addr " << server_addr.sin_addr.s_addr << '\n';
+    std::cout << " server_addr " << inet_ntop(AF_INET, &server_addr.sin_addr, buf, sizeof(buf))
+    << " curr_balance " << curr_balance << '\n';
 
+    // Cria a thread que será responsável pela saída no terminal
+    std::thread output_thread(handle_output);
+    output_thread.detach();
 
-    // Lê da entrada padrão a próxima ação a ser feita
+    uint32_t dest_ip;
+    int amount;
+    std::string ip_string;
+
+    // Thread principal lê a entrada padrão para requisições do usuário
     while(true){
-        std::cin >> transfer_dest_ip >> transfer_amount;
+        std::cin >> ip_string >> amount;
 
-        // Checa se transfer_amount informado foi 0 (mostra saldo atual)
-        if (transfer_amount == 0){
-            std::cout << "curr_balance " << curr_balance << '\n';
+        // Se o usuário só quer ver o saldo atual (amount == 0)
+        if (amount == 0){
+            show_curr_balance = true;
+            // notificar a thread de output
+            cv.notify_one();
             continue;
         }
-        
-        
+
+        // converte string "x.x.x.x" para uint32_t (network order)
+        struct in_addr inaddr;
+        if (inet_aton(ip_string.c_str(), &inaddr) == 0) {
+            std::cerr << "IP inválido: " << ip_string << '\n';
+            continue;
+        }
+        dest_ip = inaddr.s_addr; // já em network byte order
+
+        int new_balance;
+        if (send_transfer_request(dest_ip, amount, new_balance, sock, server_addr)){
+            // Modifica as variáveis globais que guardam as informações da última transferência
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                transfer_dest_ip    = dest_ip;
+                transfer_amount     = amount;
+                curr_balance        = new_balance;
+                show_last_transfer  = true;
+            }
+            // Notifica a thread de interface que houve uma nova transação
+            cv.notify_one();
+        } else {
+            no_server_answer = true;
+            cv.notify_one();
+        }
     }
 
     return 0;

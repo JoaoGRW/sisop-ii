@@ -4,12 +4,13 @@
 #include <condition_variable>
 #include <ctime>
 #include <unordered_map>
-#include <list>
+#include <vector>
 #include <cstdlib>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <cstring>
 #include "messages.h"
@@ -24,12 +25,16 @@ class Client{
 
     public:
     Client(uint32_t ip, uint32_t bal){
-        this->ip_addr = ip;
-        this->balance = bal;
-        this->last_req = 0;
+        this->ip_addr   = ip;
+        this->last_req  = 0;
+        this->balance   = bal;
     }
 
-    Client(){}
+    Client(){
+        this->ip_addr   = 0;
+        this->last_req  = 0;
+        this->balance   = 0;
+    }
 
     // Metodos getters
     uint32_t getIPAddress(){ return this->ip_addr; }
@@ -42,8 +47,8 @@ class Client{
         this->balance += amount_transfered;
     }
 
-    void updateLastRequestID(){
-        this->last_req++;
+    void setLastRequestID(uint32_t last_req_id){
+        this->last_req = last_req_id;
     }
 
     void updateRequest(){
@@ -79,15 +84,20 @@ public:
 std::unordered_map<uint32_t, Client> clients;
 std::mutex clients_mtx;
 // Histórico de transações
-std::list<Transaction> transaction_history;
+std::vector<Transaction> transaction_history;
 std::mutex transactions_mtx;
 int next_transaction_id = 0;
 
-// Variáveis de controle de novas entradas nas estruturas
-bool newTransaction = false;
-int num_transactions = 0;
-int total_transfered = 0;
-int total_balance = 0;
+// Variáveis que guardam os dados da seção do servidor
+int num_transactions    = 0;
+int total_transfered    = 0;
+int total_balance       = 0;
+
+// Variáveis de controle para a variável de condição
+bool newTransaction     = false;
+bool duplicate_request  = false;
+// Índice da transferência que foi recebida em duplicata
+int dup_req_index       = 0;
 
 // Mutex e variável de condição para o subsistema de interface
 std::condition_variable cv;
@@ -137,9 +147,10 @@ void send_request_ACK(Client& client, int sock, sockaddr_in client_addr){
     reqACK.type = static_cast<uint16_t>(messageType::REQUEST_ACK);
     reqACK.seq_n = client.getLastRequestID();
     struct requestACK ack = { reqACK.seq_n, client.getBalance() };
+    reqACK.req_ack = ack;
 
     // Envia o ACK da requisição
-    sendto(sock, &reqACK, sizeof(reqACK), 0, (sockaddr*)&client_addr, sizeof(&client_addr));
+    sendto(sock, &reqACK, sizeof(reqACK), 0, (sockaddr*)&client_addr, sizeof(client_addr));
 }
 
 // Função para responder à uma requisição de um cliente
@@ -166,19 +177,22 @@ void handle_request(int sock, sockaddr_in cli_addr, packet req_message){
 
     // Checa se o numero de sequencia da requisição está correto
     // Caso não esteja o correto o número de sequência o servidor reenvia o último ACK
-    if (origin_cli.getLastRequestID() != req_message.seq_n){
+    if (req_message.seq_n != origin_cli.getLastRequestID() + 1){
         send_request_ACK(origin_cli, sock, cli_addr);
+        return;
     }
     
     // Checa se o cliente tem saldo suficiente
     int transaction_val = req_message.req.amount;
     if (origin_cli.getBalance() < transaction_val)
         return;
+
+    send_request_ACK(origin_cli, sock, cli_addr);
     
     // Atualiza o saldo dos 2 clientes e envia a mensagem de ACK
     origin_cli.updateBalance(-transaction_val);
     dest_cli.updateBalance(transaction_val);
-    origin_cli.updateLastRequestID();
+    origin_cli.setLastRequestID(req_message.seq_n);
 
     // Ínicio da seção crítica
     clients_mtx.lock();
@@ -188,8 +202,6 @@ void handle_request(int sock, sockaddr_in cli_addr, packet req_message){
 
     clients_mtx.unlock();
     // Fim da seção crítica
-
-    send_request_ACK(origin_cli, sock, cli_addr);
 
     // Atualiza o histórico de transferências
     // Ínicio da seção crítica
@@ -244,13 +256,17 @@ void handle_interface(){
         // Le os dados da ultima transacao realizada
         transactions_mtx.lock();
         print_current_date_time();
-        Transaction last_t = transaction_history.back();
-        std::cout << " client " << last_t.getOriginIP() << " id_req " << last_t.getReqID()
-        << " dest " << last_t.getDestIP() << " value " << last_t.getAmount() << '\n';
+        Transaction last_t = transaction_history[num_transactions - 1];
         transactions_mtx.unlock();
 
-        print_transactions_data(); 
+        uint32_t origin_ip = last_t.getOriginIP();
+        uint32_t dest_ip = last_t.getDestIP();
+        char buf[INET_ADDRSTRLEN];
+        std::cout << " client " << inet_ntop(AF_INET, &origin_ip, buf, sizeof(buf)) 
+        << " id_req " << last_t.getReqID()
+        << " dest " << inet_ntop(AF_INET, &dest_ip, buf, sizeof(buf)) << " value " << last_t.getAmount() << '\n';
 
+        print_transactions_data(); 
     }
 }
 

@@ -54,11 +54,12 @@ bool open_client_socket(int& sock, int port, struct sockaddr_in& local_addr){
     }
  
     // Fazendo o bind do socket
+    /*
     local_addr.sin_family           = AF_INET;
     local_addr.sin_port             = htons(port);
-    local_addr.sin_addr.s_addr      = INADDR_ANY;
+    local_addr.sin_addr.s_addr      = inet_addr("192.168.57.2"); // INADDR_ANY;
 
-    /*if (bind(sock, (struct sockaddr*)&local_addr, sizeof(struct sockaddr)) < 0){
+    if (bind(sock, (struct sockaddr*)&local_addr, sizeof(struct sockaddr)) < 0){
         std::cerr << "ERROR on bind\n";
         return false;
     }*/
@@ -83,15 +84,15 @@ bool send_discovery_message(int& sock, int port, struct sockaddr_in& server_addr
     socklen_t server_len = sizeof(server_addr);
     int n;
 
-    
-    while (true){
+    int resend = 0;
+    while (resend < 3){
         sendto(sock, &discovery_p, sizeof(discovery_p), 0, (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr));
         
         n = recvfrom(sock, buffer, 256, 0, (struct sockaddr*)&server_addr, &server_len);
 
         // Checa se o timeout foi estourado ou foi recebida uma resposta
         if (n < 0){
-            std::cout << "WARNING discovery message timeout, resending...\n";
+            resend++;
             continue;
         }
 
@@ -103,6 +104,10 @@ bool send_discovery_message(int& sock, int port, struct sockaddr_in& server_addr
             return true;
         }
     }
+
+    std::lock_guard<std::mutex> lock(mtx);
+    no_server_answer = true;
+    cv.notify_one();
 
     return false;
 }
@@ -157,9 +162,11 @@ void handle_output(){
 
         bool transfer = show_last_transfer;
         bool balance  = show_curr_balance;
+        bool no_ans   = no_server_answer;
 
         show_last_transfer = false;
         show_curr_balance  = false;
+        no_server_answer   = false;
 
         // Verifica se deve imprimir informações da última transferência ou o saldo atual
         print_current_date_time();
@@ -170,7 +177,10 @@ void handle_output(){
             << " value " << transfer_amount << " new_balance " << curr_balance << '\n';
         }
         if (balance){
-            std::cout << "curr_balance " << curr_balance << '\n';
+            std::cout << " curr_balance " << curr_balance << '\n';
+        }
+        if (no_ans){
+            std::cerr << "ERROR no server answer\n";
         }
     }
 }

@@ -282,6 +282,7 @@ void handle_interface(){
         if (dup){
             // Pega as informações da transação que foi recebida duplicada
             transactions_mtx.lock();
+            std::cout << " DUP!! ";
             Transaction duplicate = transaction_history[dup_req_index];
             transactions_mtx.unlock();
             

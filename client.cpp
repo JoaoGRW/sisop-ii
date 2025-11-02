@@ -128,8 +128,9 @@ bool send_transfer_request(uint32_t dest_ip, int amount, int &new_balance, int s
         sendto(sock, &transfer_req, sizeof(transfer_req), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
 
         int n = recvfrom(sock, &buffer, 256, 0, (struct sockaddr*)&server_addr, &len);
+        
+        // Timeout ou erro no recvfrom
         if (n < 0) {
-            // timeout ou erro no recvfrom
             resend++;
             continue;
         }

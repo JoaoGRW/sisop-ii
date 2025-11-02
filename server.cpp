@@ -20,26 +20,26 @@
 
 class Client{
     uint32_t ip_addr;
-    uint32_t last_req;
+    uint32_t n_seq;
     uint32_t balance;
 
     public:
     Client(uint32_t ip, uint32_t bal){
         this->ip_addr   = ip;
-        this->last_req  = 0;
+        this->n_seq     = 0;
         this->balance   = bal;
     }
 
     Client(){
-        this->ip_addr   = 0;
-        this->last_req  = 0;
-        this->balance   = 0;
+        this->ip_addr       = 0;
+        this->n_seq    = 0;
+        this->balance       = 0;
     }
 
     // Metodos getters
     uint32_t getIPAddress(){ return this->ip_addr; }
 
-    uint32_t getLastRequestID(){ return this->last_req; }
+    uint32_t getSequenceN(){ return this->n_seq; }
 
     uint32_t getBalance(){ return this->balance; }
 
@@ -47,12 +47,12 @@ class Client{
         this->balance += amount_transfered;
     }
 
-    void setLastRequestID(uint32_t last_req_id){
-        this->last_req = last_req_id;
+    void setSequenceNumber(uint32_t seq_n){
+        this->n_seq = seq_n;
     }
 
-    void updateRequest(){
-        this->last_req++;
+    void updateSequenceNumber(){
+        this->n_seq++;
     }
 };
 
@@ -120,12 +120,14 @@ void handle_discovery(int sock, sockaddr_in server_addr, sockaddr_in cli_addr){
 
     // Ínicio da seção crítica
     clients_mtx.lock(); 
-    // Checa se o cliente já não está na tabela de clientes
-    if (!clients.count(cli_ip)){
-        // Se não está cria novo e adiciona na tabela
-        client = create_new_client(cli_ip, STARTING_BALANCE);
-    }else{
-        client = clients[cli_ip];
+    {
+        // Checa se o cliente já não está na tabela de clientes
+        if (!clients.count(cli_ip)){
+            // Se não está cria novo e adiciona na tabela
+            client = create_new_client(cli_ip, STARTING_BALANCE);
+        }else{
+            client = clients[cli_ip];
+        }
     }
     clients_mtx.unlock();
     // Fim da seção crítica
@@ -134,7 +136,8 @@ void handle_discovery(int sock, sockaddr_in server_addr, sockaddr_in cli_addr){
     packet discovery_answer;
     discovery_answer.type = static_cast<uint16_t>(messageType::DISCOVERY_ACK);
     discovery_answer.seq_n = 0;
-    struct discoveryACK discACK = { server_addr.sin_addr.s_addr, client.getBalance()};
+    // Pacote de resposta possuí o número de sequência atual de requisições do cliente e o seu saldo
+    struct discoveryACK discACK = { client.getSequenceN(), client.getBalance() };
     discovery_answer.disc_ack = discACK;
 
     // Enviando confirmação de descoberta
@@ -145,7 +148,7 @@ void handle_discovery(int sock, sockaddr_in server_addr, sockaddr_in cli_addr){
 void send_request_ACK(Client& client, int sock, sockaddr_in client_addr){
     packet reqACK;
     reqACK.type = static_cast<uint16_t>(messageType::REQUEST_ACK);
-    reqACK.seq_n = client.getLastRequestID();
+    reqACK.seq_n = client.getSequenceN();
     struct requestACK ack = { reqACK.seq_n, client.getBalance() };
     reqACK.req_ack = ack;
 
@@ -177,7 +180,7 @@ void handle_request(int sock, sockaddr_in cli_addr, packet req_message){
 
     // Checa se o numero de sequencia da requisição está correto
     // Caso não esteja o correto o número de sequência o servidor reenvia o último ACK
-    if (req_message.seq_n != origin_cli.getLastRequestID() + 1){
+    if (req_message.seq_n != origin_cli.getSequenceN() + 1){
         send_request_ACK(origin_cli, sock, cli_addr);
         return;
     }
@@ -192,25 +195,25 @@ void handle_request(int sock, sockaddr_in cli_addr, packet req_message){
     // Atualiza o saldo dos 2 clientes e envia a mensagem de ACK
     origin_cli.updateBalance(-transaction_val);
     dest_cli.updateBalance(transaction_val);
-    origin_cli.setLastRequestID(req_message.seq_n);
+    origin_cli.setSequenceNumber(req_message.seq_n);
 
     // Ínicio da seção crítica
     clients_mtx.lock();
-
-    clients[cli_ip] = origin_cli;
-    clients[dest_ip] = dest_cli;
-
+    {
+        clients[cli_ip] = origin_cli;
+        clients[dest_ip] = dest_cli;
+    }
     clients_mtx.unlock();
     // Fim da seção crítica
 
     // Atualiza o histórico de transferências
     // Ínicio da seção crítica
     transactions_mtx.lock();
-
-    Transaction transaction(cli_ip, next_transaction_id, dest_ip, transaction_val);
-    next_transaction_id++;
-    transaction_history.push_back(transaction);
-
+    {
+        Transaction transaction(cli_ip, next_transaction_id, dest_ip, transaction_val);
+        next_transaction_id++;
+        transaction_history.push_back(transaction);
+    }
     transactions_mtx.unlock();
     // Fim da seção crítica
 
@@ -229,7 +232,7 @@ void print_current_date_time(){
     time_t now = time(0);
     struct tm *dt = localtime(&now);
 
-    std::cout << dt->tm_year + 1900 << '-' << dt->tm_mon << '-' << dt->tm_mday << ' '
+    std::cout << dt->tm_year + 1900 << '-' << dt->tm_mon + 1 << '-' << dt->tm_mday << ' '
     << dt->tm_hour << ':' << dt->tm_min << ':' << dt->tm_sec;
 } 
 

@@ -30,7 +30,7 @@ uint32_t curr_balance;
 uint32_t curr_seq_n = 0;
 
 // Função auxiliar para abrir o socket do cliente, configurado para broadcast
-bool open_client_socket(int& sock, int port, struct sockaddr_in& local_addr){
+bool open_client_socket(int& sock, int port){
     // Abrindo socket
     if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1){
         std::cerr << "ERROR on opening\n";
@@ -52,23 +52,12 @@ bool open_client_socket(int& sock, int port, struct sockaddr_in& local_addr){
         std::cerr << "ERROR on setsockopt SO_RCVTIMEO\n";
         return false;
     }
- 
-    // Fazendo o bind do socket
-    /*
-    local_addr.sin_family           = AF_INET;
-    local_addr.sin_port             = htons(port);
-    local_addr.sin_addr.s_addr      = inet_addr("192.168.57.2"); // INADDR_ANY;
-
-    if (bind(sock, (struct sockaddr*)&local_addr, sizeof(struct sockaddr)) < 0){
-        std::cerr << "ERROR on bind\n";
-        return false;
-    }*/
 
     return true;
 }
 
 // Funcao auxiliar abre a socket cliente
-bool send_discovery_message(int& sock, int port, struct sockaddr_in& server_addr){  
+bool send_discovery_message(int sock, int port, struct sockaddr_in& server_addr){  
     // Preparando o endereço de Broadcast
     struct sockaddr_in broadcast_addr;
     broadcast_addr.sin_family       = AF_INET;
@@ -101,6 +90,7 @@ bool send_discovery_message(int& sock, int port, struct sockaddr_in& server_addr
         // Se a resposta foi um ACK de um pacote de descoberta atualiza o saldo e retorna
         if (response_p.type == static_cast<uint16_t>(messageType::DISCOVERY_ACK)){
             curr_balance = response_p.disc_ack.client_balance;
+            curr_seq_n = response_p.disc_ack.curr_seq_n;
             return true;
         }
     }
@@ -117,7 +107,7 @@ void print_current_date_time(){
     time_t now = time(0);
     struct tm *dt = localtime(&now);
 
-    std::cout << dt->tm_year + 1900 << '-' << dt->tm_mon << '-' << dt->tm_mday << ' '
+    std::cout << dt->tm_year + 1900 << '-' << dt->tm_mon + 1 << '-' << dt->tm_mday << ' '
     << dt->tm_hour << ':' << dt->tm_min << ':' << dt->tm_sec;
 }
 
@@ -188,15 +178,15 @@ void handle_output(){
 int main(int argc, char** argv){
     // Recebe a porta na qual o cliente irá rodar pela linha de comando
     if (argc < 2){
-        std::cout << "Porta não informada.";
+        std::cout << "Port not informed.";
         return 1;
     }
     int port = atoi(argv[1]);
     int sock;
-    struct sockaddr_in local_addr, server_addr;
+    struct sockaddr_in server_addr;
 
     // Abertura do socket do cliente com opção de broadcast
-    if (!open_client_socket(sock, port, local_addr))
+    if (!open_client_socket(sock, port))
         return 1;
 
     // Envio da mensagem de descoberta do servidor, endereço será escrito em server_addr

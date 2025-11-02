@@ -4,7 +4,7 @@ enum class messageType{
     DISCOVERY       = 0,
     DISCOVERY_ACK   = 1,
     REQUEST         = 2,
-    REQUEST_ACK     = 3
+    REQUEST_ACK     = 3,
 };
 
 struct request{
@@ -13,12 +13,12 @@ struct request{
 };
 
 struct requestACK{
-    uint32_t seq_n; // Número de sequência da mensagem do ACK
-    uint32_t new_balance; // Novo saldo do cliente de origem
+    uint32_t seq_n;         // Número de sequência da mensagem do ACK
+    uint32_t new_balance;   // Novo saldo do cliente de origem
 };
 
 struct discoveryACK{
-    uint32_t server_address; // IP do servidor para confirmação
+    uint32_t curr_seq_n;     // Número de sequência de requisição atual do cliente
     uint32_t client_balance; // Saldo do cliente recém descoberto
 };
 

@@ -5,8 +5,8 @@ CPP = g++
 CPPFLAGS = -std=c++11 -pthread
 
 # Nome dos executáveis gerados
-SERVER_TARGET = server 
-CLIENT_TARGET = client 
+SERVER_EXE = server 
+CLIENT_EXE = client 
 
 # Arquivos fonte
 SERVER_SRC = server.cpp 
@@ -16,13 +16,14 @@ CLIENT_SRC = client.cpp
 HEADERS = messages.h 
 
 # Compilação do servidor
-$(SERVER_TARGET): $(SERVER_SRC) $(HEADERS)
-	$(CPP) $(CPPFLAGS) $(SERVER_SRC) -o $(SERVER_TARGET)
+$(SERVER_EXE): $(SERVER_SRC) $(HEADERS)
+	$(CPP) $(CPPFLAGS) $(SERVER_SRC) -o $(SERVER_EXE)
 
 # Compilação do cliente
-$(CLIENT_TARGET): $(CLIENT_SRC) $(HEADERS)
-	$(CPP) $(CPPFLAGS) $(CLIENT_SRC) -o $(CLIENT_TARGET)
+$(CLIENT_EXE): $(CLIENT_SRC) $(HEADERS)
+	$(CPP) $(CPPFLAGS) $(CLIENT_SRC) -o $(CLIENT_EXE)
 
 # Regra make clean
+.PHONY: clean
 clean:
-	rm -f $(SERVER_TARGET) $(CLIENT_TARGET) *.o
+	rm -f $(SERVER_EXE) $(CLIENT_EXE) *.o

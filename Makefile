@@ -15,6 +15,9 @@ CLIENT_SRC = client.cpp
 # Arquivos de cabeçalho necessários (headers)
 HEADERS = messages.h 
 
+# Execução padrão compila os arquivos fonte do cliente e servidor
+all: $(SERVER_EXE) $(CLIENT_EXE)
+
 # Compilação do servidor
 $(SERVER_EXE): $(SERVER_SRC) $(HEADERS)
 	$(CPP) $(CPPFLAGS) $(SERVER_SRC) -o $(SERVER_EXE)

@@ -24,13 +24,24 @@ bool no_server_answer   = false;
 std::mutex mtx;
 std::condition_variable cv;
 
+// Endereço IP da aplicação do cliente
+uint32_t local_ip;
+
 uint32_t transfer_dest_ip;
 uint32_t transfer_amount;
 uint32_t curr_balance;
 uint32_t curr_seq_n = 0;
 
 // Função auxiliar para abrir o socket do cliente, configurado para broadcast
-bool open_client_socket(int& sock, int port){
+bool open_client_socket(int& sock, int port, struct sockaddr_in& local_addr){
+    // Conigurando o endereço local do cliente
+    local_addr.sin_family       = AF_INET;
+    local_addr.sin_port         = htons(port);
+    local_addr.sin_addr.s_addr  = INADDR_ANY;
+
+    // Salva o IP do local do cliente
+    local_ip = local_addr.sin_addr.s_addr;
+
     // Abrindo socket
     if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1){
         std::cerr << "ERROR on opening\n";
@@ -184,10 +195,10 @@ int main(int argc, char** argv){
     }
     int port = atoi(argv[1]);
     int sock;
-    struct sockaddr_in server_addr;
+    struct sockaddr_in server_addr, local_addr;
 
     // Abertura do socket do cliente com opção de broadcast
-    if (!open_client_socket(sock, port))
+    if (!open_client_socket(sock, port, local_addr))
         return 1;
 
     // Envio da mensagem de descoberta do servidor, endereço será escrito em server_addr
@@ -228,6 +239,13 @@ int main(int argc, char** argv){
             continue;
         }
         dest_ip = inaddr.s_addr; // já em network byte order
+
+        // Checa se o IP informado é o do cliente
+        if (dest_ip == local_ip){
+            std::cerr << "Não é possível fazer uma transferência para sí mesmo. IP: " 
+            << ip_string << '\n';
+            continue;
+        }
 
         int new_balance;
         if (send_transfer_request(dest_ip, amount, new_balance, sock, server_addr)){
